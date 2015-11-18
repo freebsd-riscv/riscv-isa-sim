@@ -221,6 +221,7 @@ void sim_t::interactive_reg(const std::string& cmd, const std::vector<std::strin
       if ((r + 1) % 4 == 0)
         fprintf(stderr, "\n");
     }
+    fprintf(stderr, "sptbr0: 0x%016lx, sptbr1: 0x%016lx\n", p->state.sptbr0, p->state.sptbr1);
   } else
     fprintf(stderr, "0x%016" PRIx64 "\n", get_reg(args));
 }

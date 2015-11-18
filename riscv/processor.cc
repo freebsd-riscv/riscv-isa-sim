@@ -357,7 +357,8 @@ void processor_t::set_csr(int which, reg_t val)
     }
     case CSR_SEPC: state.sepc = val; break;
     case CSR_STVEC: state.stvec = val >> 2 << 2; break;
-    case CSR_SPTBR: state.sptbr = zext_xlen(val & -PGSIZE); break;
+    case CSR_SPTBR0: state.sptbr0 = zext_xlen(val & -PGSIZE); break;
+    case CSR_SPTBR1: state.sptbr1 = zext_xlen(val & -PGSIZE); break;
     case CSR_SSCRATCH: state.sscratch = val; break;
     case CSR_MEPC: state.mepc = val; break;
     case CSR_MSCRATCH: state.mscratch = val; break;
@@ -444,7 +445,8 @@ reg_t processor_t::get_csr(int which)
       if (max_xlen > xlen)
         return state.scause | ((state.scause >> (max_xlen-1)) << (xlen-1));
       return state.scause;
-    case CSR_SPTBR: return state.sptbr;
+    case CSR_SPTBR0: return state.sptbr0;
+    case CSR_SPTBR1: return state.sptbr1;
     case CSR_SASID: return 0;
     case CSR_SSCRATCH: return state.sscratch;
     case CSR_MSTATUS: return state.mstatus;
