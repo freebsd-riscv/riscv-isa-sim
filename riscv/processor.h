@@ -54,8 +54,7 @@ struct state_t
   reg_t sbadaddr;
   reg_t sscratch;
   reg_t stvec;
-  reg_t sptbr0;
-  reg_t sptbr1;
+  reg_t sptbr;
   reg_t scause;
   reg_t sutime_delta;
   reg_t suinstret_delta;
