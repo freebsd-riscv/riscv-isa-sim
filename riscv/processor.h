@@ -31,6 +31,18 @@ struct commit_log_reg_t
   reg_t data;
 };
 
+typedef struct
+{
+  uint8_t prv;
+  bool step;
+  bool ebreakm;
+  bool ebreakh;
+  bool ebreaks;
+  bool ebreaku;
+  bool halt;
+  uint8_t cause;
+} dcsr_t;
+
 // architectural state of a RISC-V hart
 struct state_t
 {
@@ -41,28 +53,41 @@ struct state_t
   regfile_t<freg_t, NFPR, false> FPR;
 
   // control and status registers
+  reg_t prv;
   reg_t mstatus;
   reg_t mepc;
   reg_t mbadaddr;
-  reg_t mtimecmp;
   reg_t mscratch;
+  reg_t mtvec;
   reg_t mcause;
   reg_t minstret;
   reg_t mie;
   reg_t mip;
+  reg_t medeleg;
+  reg_t mideleg;
+  reg_t mucounteren;
+  reg_t mscounteren;
   reg_t sepc;
   reg_t sbadaddr;
   reg_t sscratch;
   reg_t stvec;
   reg_t sptbr;
   reg_t scause;
-  reg_t sutime_delta;
-  reg_t suinstret_delta;
-  reg_t tohost;
-  reg_t fromhost;
+  reg_t dpc;
+  reg_t dscratch;
+  dcsr_t dcsr;
+
   uint32_t fflags;
   uint32_t frm;
   bool serialized; // whether timer CSRs are in a well-defined state
+
+  // When true, execute a single instruction and then enter debug mode.  This
+  // can only be set by executing dret.
+  enum {
+      STEP_NONE,
+      STEP_STEPPING,
+      STEP_STEPPED
+  } single_step;
 
   reg_t load_reservation;
 
@@ -76,14 +101,13 @@ struct state_t
 class processor_t : public abstract_device_t
 {
 public:
-  processor_t(const char* isa, sim_t* sim, uint32_t id);
+  processor_t(const char* isa, sim_t* sim, uint32_t id, bool halt_on_reset=false);
   ~processor_t();
 
   void set_debug(bool value);
   void set_histogram(bool value);
-  void reset(bool value);
+  void reset();
   void step(size_t n); // run for n cycles
-  bool running() { return run; }
   void set_csr(int which, reg_t val);
   void raise_interrupt(reg_t which);
   reg_t get_csr(int which);
@@ -92,12 +116,13 @@ public:
   extension_t* get_extension() { return ext; }
   bool supports_extension(unsigned char ext) {
     if (ext >= 'a' && ext <= 'z') ext += 'A' - 'a';
-    return ext >= 'A' && ext <= 'Z' && ((cpuid >> (ext - 'A')) & 1);
+    return ext >= 'A' && ext <= 'Z' && ((isa >> (ext - 'A')) & 1);
   }
-  void push_privilege_stack();
-  void pop_privilege_stack();
+  bool validate_priv(reg_t priv);
+  void set_privilege(reg_t);
   void yield_load_reservation() { state.load_reservation = (reg_t)-1; }
   void update_histogram(reg_t pc);
+  const disassembler_t* get_disassembler() { return disassembler; }
 
   void register_insn(insn_desc_t);
   void register_extension(extension_t*);
@@ -106,20 +131,22 @@ public:
   bool load(reg_t addr, size_t len, uint8_t* bytes);
   bool store(reg_t addr, size_t len, const uint8_t* bytes);
 
+  // When true, display disassembly of each instruction that's executed.
+  bool debug;
+
 private:
   sim_t* sim;
   mmu_t* mmu; // main memory is always accessed via the mmu
   extension_t* ext;
   disassembler_t* disassembler;
   state_t state;
-  reg_t cpuid;
   uint32_t id;
-  int max_xlen;
-  int xlen;
-  std::string isa;
-  bool run; // !reset
-  bool debug;
+  unsigned max_xlen;
+  unsigned xlen;
+  reg_t isa;
+  std::string isa_string;
   bool histogram_enabled;
+  bool halt_on_reset;
 
   std::vector<insn_desc_t> instructions;
   std::map<reg_t,uint64_t> pc_histogram;
@@ -131,9 +158,13 @@ private:
   void take_interrupt(); // take a trap if any interrupts are pending
   void take_trap(trap_t& t, reg_t epc); // take an exception
   void disasm(insn_t insn); // disassemble and print an instruction
+  int paddr_bits();
+
+  void enter_debug_mode(uint8_t cause);
 
   friend class sim_t;
   friend class mmu_t;
+  friend class rtc_t;
   friend class extension_t;
 
   void parse_isa_string(const char* isa);

@@ -7,6 +7,7 @@
 #include "trap.h"
 #include "common.h"
 #include "config.h"
+#include "sim.h"
 #include "processor.h"
 #include "memtracer.h"
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 // virtual memory configuration
 #define PGSHIFT 12
 const reg_t PGSIZE = 1 << PGSHIFT;
+const reg_t PGMASK = ~(PGSIZE-1);
 
 struct insn_fetch_t
 {
@@ -33,12 +35,12 @@ struct icache_entry_t {
 class mmu_t
 {
 public:
-  mmu_t(char* _mem, size_t _memsz);
+  mmu_t(sim_t* sim, processor_t* proc);
   ~mmu_t();
 
   // template for functions that load an aligned value from memory
   #define load_func(type) \
-    type##_t load_##type(reg_t addr) __attribute__((always_inline)) { \
+    inline type##_t load_##type(reg_t addr) { \
       if (addr & (sizeof(type##_t)-1)) \
         throw trap_load_address_misaligned(addr); \
       reg_t vpn = addr >> PGSHIFT; \
@@ -93,10 +95,7 @@ public:
     int length = insn_length(insn);
 
     if (likely(length == 4)) {
-      if (likely(addr % PGSIZE < PGSIZE-2))
-        insn |= (insn_bits_t)*(const int16_t*)(iaddr + 1) << 16;
-      else
-        insn |= (insn_bits_t)*(const int16_t*)translate_insn_addr(addr + 2) << 16;
+      insn |= (insn_bits_t)*(const int16_t*)translate_insn_addr(addr + 2) << 16;
     } else if (length == 2) {
       insn = (int16_t)insn;
     } else if (length == 6) {
@@ -113,7 +112,7 @@ public:
     entry->tag = addr;
     entry->data = fetch;
 
-    reg_t paddr = (const char*)iaddr - mem;
+    reg_t paddr = sim->mem_to_addr((char*)iaddr);
     if (tracer.interested_in_range(paddr, paddr + 1, FETCH)) {
       entry->tag = -1;
       tracer.trace(paddr, length, FETCH);
@@ -131,10 +130,9 @@ public:
 
   inline insn_fetch_t load_insn(reg_t addr)
   {
-    return access_icache(addr)->data;
+    icache_entry_t entry;
+    return refill_icache(addr, &entry)->data;
   }
-
-  void set_processor(processor_t* p) { proc = p; flush_tlb(); }
 
   void flush_tlb();
   void flush_icache();
@@ -142,10 +140,10 @@ public:
   void register_memtracer(memtracer_t*);
 
 private:
-  char* mem;
-  size_t memsz;
+  sim_t* sim;
   processor_t* proc;
   memtracer_list_t tracer;
+  uint16_t fetch_temp;
 
   // implement an instruction cache for simulator performance
   icache_entry_t icache[ICACHE_ENTRIES];
@@ -157,11 +155,12 @@ private:
   reg_t tlb_load_tag[TLB_ENTRIES];
   reg_t tlb_store_tag[TLB_ENTRIES];
 
-  // finish translation on a TLB miss and upate the TLB
+  // finish translation on a TLB miss and update the TLB
   void refill_tlb(reg_t vaddr, reg_t paddr, access_type type);
+  const char* fill_from_mmio(reg_t vaddr, reg_t paddr);
 
   // perform a page table walk for a given VA; set referenced/dirty bits
-  reg_t walk(reg_t addr, bool supervisor, access_type type);
+  reg_t walk(reg_t addr, access_type type, reg_t prv);
 
   // handle uncommon cases: TLB misses, page faults, MMIO
   const uint16_t* fetch_slow_path(reg_t addr);
@@ -170,13 +169,13 @@ private:
   reg_t translate(reg_t addr, access_type type);
 
   // ITLB lookup
-  const uint16_t* translate_insn_addr(reg_t addr) __attribute__((always_inline)) {
+  inline const uint16_t* translate_insn_addr(reg_t addr) {
     reg_t vpn = addr >> PGSHIFT;
     if (likely(tlb_insn_tag[vpn % TLB_ENTRIES] == vpn))
       return (uint16_t*)(tlb_data[vpn % TLB_ENTRIES] + addr);
     return fetch_slow_path(addr);
   }
-  
+
   friend class processor_t;
 };
 
