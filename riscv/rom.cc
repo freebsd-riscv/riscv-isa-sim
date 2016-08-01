@@ -1,4 +1,14 @@
 #include "devices.h"
+#include "sim.h"
+#include "mmu.h"
+#include "gdbserver.h"
+#include <map>
+#include <iostream>
+#include <sstream>
+#include <climits>
+#include <cstdlib>
+#include <cassert>
+#include <signal.h>
 
 rom_device_t::rom_device_t(std::vector<char> data)
   : data(data)

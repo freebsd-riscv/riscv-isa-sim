@@ -1,4 +1,14 @@
 #include "devices.h"
+#include "sim.h"
+#include "mmu.h"
+#include "gdbserver.h"
+#include <map>
+#include <iostream>
+#include <sstream>
+#include <climits>
+#include <cstdlib>
+#include <cassert>
+#include <signal.h>
 
 void bus_t::add_device(reg_t addr, abstract_device_t* dev)
 {
