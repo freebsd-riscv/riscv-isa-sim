@@ -109,6 +109,8 @@ void processor_t::parse_isa_string(const char* str)
   // advertise support for supervisor and user modes
   isa |= 1L << ('s' - 'a');
   isa |= 1L << ('u' - 'a');
+
+  max_isa = isa;
 }
 
 void state_t::reset()
@@ -118,6 +120,9 @@ void state_t::reset()
   pc = DEFAULT_RSTVEC;
   mtvec = DEFAULT_MTVEC;
   load_reservation = -1;
+  tselect = 0;
+  for (unsigned int i = 0; i < num_triggers; i++)
+    mcontrol[i].type = 2;
 }
 
 void processor_t::set_debug(bool value)
@@ -154,6 +159,7 @@ void processor_t::raise_interrupt(reg_t which)
   throw trap_t(((reg_t)1 << (max_xlen-1)) | which);
 }
 
+// Count number of contiguous 0 bits starting from the LSB.
 static int ctz(reg_t val)
 {
   int res = 0;
@@ -179,14 +185,11 @@ void processor_t::take_interrupt()
     raise_interrupt(ctz(enabled_interrupts));
 }
 
-bool processor_t::validate_priv(reg_t priv)
-{
-  return priv == PRV_U || priv == PRV_S || priv == PRV_M;
-}
-
 void processor_t::set_privilege(reg_t prv)
 {
-  assert(validate_priv(prv));
+  assert(prv <= PRV_M);
+  if (prv == PRV_H)
+    prv = PRV_U;
   mmu->flush_tlb();
   state.prv = prv;
 }
@@ -198,7 +201,6 @@ void processor_t::enter_debug_mode(uint8_t cause)
   set_privilege(PRV_M);
   state.dpc = state.pc;
   state.pc = DEBUG_ROM_START;
-  //debug = true; // TODO
 }
 
 void processor_t::take_trap(trap_t& t, reg_t epc)
@@ -311,12 +313,10 @@ void processor_t::set_csr(int which, reg_t val)
 
       reg_t mask = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_MIE | MSTATUS_MPIE
                  | MSTATUS_SPP | MSTATUS_FS | MSTATUS_MPRV | MSTATUS_PUM
-                 | MSTATUS_MXR | (ext ? MSTATUS_XS : 0);
+                 | MSTATUS_MPP | MSTATUS_MXR | (ext ? MSTATUS_XS : 0);
 
       if (validate_vm(max_xlen, get_field(val, MSTATUS_VM)))
         mask |= MSTATUS_VM;
-      if (validate_priv(get_field(val, MSTATUS_MPP)))
-        mask |= MSTATUS_MPP;
 
       state.mstatus = (state.mstatus & ~mask) | (val & mask);
 
@@ -351,11 +351,22 @@ void processor_t::set_csr(int which, reg_t val)
       state.medeleg = (state.medeleg & ~mask) | (val & mask);
       break;
     }
+    case CSR_MINSTRET:
+    case CSR_MCYCLE:
+      if (xlen == 32)
+        state.minstret = (state.minstret >> 32 << 32) | (val & 0xffffffffU);
+      else
+        state.minstret = val;
+      break;
+    case CSR_MINSTRETH:
+    case CSR_MCYCLEH:
+      state.minstret = (val << 32) | (state.minstret << 32 >> 32);
+      break;
     case CSR_MUCOUNTEREN:
-      state.mucounteren = val & 7;
+      state.mucounteren = val;
       break;
     case CSR_MSCOUNTEREN:
-      state.mscounteren = val & 7;
+      state.mscounteren = val;
       break;
     case CSR_SSTATUS: {
       reg_t mask = SSTATUS_SIE | SSTATUS_SPIE | SSTATUS_SPP | SSTATUS_FS
@@ -383,6 +394,60 @@ void processor_t::set_csr(int which, reg_t val)
     case CSR_MSCRATCH: state.mscratch = val; break;
     case CSR_MCAUSE: state.mcause = val; break;
     case CSR_MBADADDR: state.mbadaddr = val; break;
+    case CSR_MISA: {
+      if (!(val & (1L << ('F' - 'A'))))
+        val &= ~(1L << ('D' - 'A'));
+
+      // allow MAFDC bits in MISA to be modified
+      reg_t mask = 0;
+      mask |= 1L << ('M' - 'A');
+      mask |= 1L << ('A' - 'A');
+      mask |= 1L << ('F' - 'A');
+      mask |= 1L << ('D' - 'A');
+      mask |= 1L << ('C' - 'A');
+      mask &= max_isa;
+
+      isa = (val & mask) | (isa & ~mask);
+      break;
+    }
+    case CSR_TSELECT:
+      if (val < state.num_triggers) {
+        state.tselect = val;
+      }
+      break;
+    case CSR_TDATA1:
+      {
+        mcontrol_t *mc = &state.mcontrol[state.tselect];
+        if (mc->dmode && !state.dcsr.cause) {
+          break;
+        }
+        mc->dmode = get_field(val, MCONTROL_DMODE(xlen));
+        mc->select = get_field(val, MCONTROL_SELECT);
+        mc->timing = get_field(val, MCONTROL_TIMING);
+        mc->action = (mcontrol_action_t) get_field(val, MCONTROL_ACTION);
+        mc->chain = get_field(val, MCONTROL_CHAIN);
+        mc->match = (mcontrol_match_t) get_field(val, MCONTROL_MATCH);
+        mc->m = get_field(val, MCONTROL_M);
+        mc->h = get_field(val, MCONTROL_H);
+        mc->s = get_field(val, MCONTROL_S);
+        mc->u = get_field(val, MCONTROL_U);
+        mc->execute = get_field(val, MCONTROL_EXECUTE);
+        mc->store = get_field(val, MCONTROL_STORE);
+        mc->load = get_field(val, MCONTROL_LOAD);
+        // Assume we're here because of csrw.
+        if (mc->execute)
+          mc->timing = 0;
+        trigger_updated();
+      }
+      break;
+    case CSR_TDATA2:
+      if (state.mcontrol[state.tselect].dmode && !state.dcsr.cause) {
+        break;
+      }
+      if (state.tselect < state.num_triggers) {
+        state.tdata2[state.tselect] = val;
+      }
+      break;
     case CSR_DCSR:
       state.dcsr.prv = get_field(val, DCSR_PRV);
       state.dcsr.step = get_field(val, DCSR_STEP);
@@ -404,6 +469,23 @@ void processor_t::set_csr(int which, reg_t val)
 
 reg_t processor_t::get_csr(int which)
 {
+  reg_t ctr_en = state.prv == PRV_U ? state.mucounteren :
+                 state.prv == PRV_S ? state.mscounteren : -1U;
+  bool ctr_ok = (ctr_en >> (which & 31)) & 1;
+
+  if (ctr_ok) {
+    if (which >= CSR_HPMCOUNTER3 && which <= CSR_HPMCOUNTER31)
+      return 0;
+    if (xlen == 32 && which >= CSR_HPMCOUNTER3H && which <= CSR_HPMCOUNTER31H)
+      return 0;
+  }
+  if (which >= CSR_MHPMCOUNTER3 && which <= CSR_MHPMCOUNTER31)
+    return 0;
+  if (xlen == 32 && which >= CSR_MHPMCOUNTER3 && which <= CSR_MHPMCOUNTER31)
+    return 0;
+  if (which >= CSR_MHPMEVENT3 && which <= CSR_MHPMEVENT31)
+    return 0;
+
   switch (which)
   {
     case CSR_FFLAGS:
@@ -421,36 +503,21 @@ reg_t processor_t::get_csr(int which)
       if (!supports_extension('F'))
         break;
       return (state.fflags << FSR_AEXC_SHIFT) | (state.frm << FSR_RD_SHIFT);
-    case CSR_TIME:
     case CSR_INSTRET:
     case CSR_CYCLE:
-      if ((state.mucounteren >> (which & (xlen-1))) & 1)
-        return get_csr(which + (CSR_MCYCLE - CSR_CYCLE));
+      if (ctr_ok)
+        return state.minstret;
       break;
-    case CSR_STIME:
-    case CSR_SINSTRET:
-    case CSR_SCYCLE:
-      if ((state.mscounteren >> (which & (xlen-1))) & 1)
-        return get_csr(which + (CSR_MCYCLE - CSR_SCYCLE));
+    case CSR_MINSTRET:
+    case CSR_MCYCLE:
+      return state.minstret;
+    case CSR_MINSTRETH:
+    case CSR_MCYCLEH:
+      if (xlen == 32)
+        return state.minstret >> 32;
       break;
     case CSR_MUCOUNTEREN: return state.mucounteren;
     case CSR_MSCOUNTEREN: return state.mscounteren;
-    case CSR_MUCYCLE_DELTA: return 0;
-    case CSR_MUTIME_DELTA: return 0;
-    case CSR_MUINSTRET_DELTA: return 0;
-    case CSR_MSCYCLE_DELTA: return 0;
-    case CSR_MSTIME_DELTA: return 0;
-    case CSR_MSINSTRET_DELTA: return 0;
-    case CSR_MUCYCLE_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MUTIME_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MUINSTRET_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MSCYCLE_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MSTIME_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MSINSTRET_DELTAH: if (xlen > 32) break; else return 0;
-    case CSR_MCYCLE: return state.minstret;
-    case CSR_MINSTRET: return state.minstret;
-    case CSR_MCYCLEH: if (xlen > 32) break; else return state.minstret >> 32;
-    case CSR_MINSTRETH: if (xlen > 32) break; else return state.minstret >> 32;
     case CSR_SSTATUS: {
       reg_t mask = SSTATUS_SIE | SSTATUS_SPIE | SSTATUS_SPP | SSTATUS_FS
                  | SSTATUS_XS | SSTATUS_PUM;
@@ -486,12 +553,43 @@ reg_t processor_t::get_csr(int which)
     case CSR_MTVEC: return state.mtvec;
     case CSR_MEDELEG: return state.medeleg;
     case CSR_MIDELEG: return state.mideleg;
-    case CSR_TDRSELECT: return 0;
+    case CSR_TSELECT: return state.tselect;
+    case CSR_TDATA1:
+      if (state.tselect < state.num_triggers) {
+        reg_t v = 0;
+        mcontrol_t *mc = &state.mcontrol[state.tselect];
+        v = set_field(v, MCONTROL_TYPE(xlen), mc->type);
+        v = set_field(v, MCONTROL_DMODE(xlen), mc->dmode);
+        v = set_field(v, MCONTROL_MASKMAX(xlen), mc->maskmax);
+        v = set_field(v, MCONTROL_SELECT, mc->select);
+        v = set_field(v, MCONTROL_TIMING, mc->timing);
+        v = set_field(v, MCONTROL_ACTION, mc->action);
+        v = set_field(v, MCONTROL_CHAIN, mc->chain);
+        v = set_field(v, MCONTROL_MATCH, mc->match);
+        v = set_field(v, MCONTROL_M, mc->m);
+        v = set_field(v, MCONTROL_H, mc->h);
+        v = set_field(v, MCONTROL_S, mc->s);
+        v = set_field(v, MCONTROL_U, mc->u);
+        v = set_field(v, MCONTROL_EXECUTE, mc->execute);
+        v = set_field(v, MCONTROL_STORE, mc->store);
+        v = set_field(v, MCONTROL_LOAD, mc->load);
+        return v;
+      } else {
+        return 0;
+      }
+      break;
+    case CSR_TDATA2:
+      if (state.tselect < state.num_triggers) {
+        return state.tdata2[state.tselect];
+      } else {
+        return 0;
+      }
+      break;
+    case CSR_TDATA3: return 0;
     case CSR_DCSR:
       {
         uint32_t v = 0;
         v = set_field(v, DCSR_XDEBUGVER, 1);
-        v = set_field(v, DCSR_HWBPCOUNT, 0);
         v = set_field(v, DCSR_NDRESET, 0);
         v = set_field(v, DCSR_FULLRESET, 0);
         v = set_field(v, DCSR_PRV, state.dcsr.prv);
@@ -615,5 +713,25 @@ bool processor_t::store(reg_t addr, size_t len, const uint8_t* bytes)
 
     default:
       return false;
+  }
+}
+
+void processor_t::trigger_updated()
+{
+  mmu->flush_tlb();
+  mmu->check_triggers_fetch = false;
+  mmu->check_triggers_load = false;
+  mmu->check_triggers_store = false;
+
+  for (unsigned i = 0; i < state.num_triggers; i++) {
+    if (state.mcontrol[i].execute) {
+      mmu->check_triggers_fetch = true;
+    }
+    if (state.mcontrol[i].load) {
+      mmu->check_triggers_load = true;
+    }
+    if (state.mcontrol[i].store) {
+      mmu->check_triggers_store = true;
+    }
   }
 }
