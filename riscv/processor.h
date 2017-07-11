@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include "debug_rom/debug_rom_defines.h"
 
 class processor_t;
 class mmu_t;
@@ -105,8 +106,8 @@ struct state_t
   reg_t mip;
   reg_t medeleg;
   reg_t mideleg;
-  uint32_t mucounteren;
-  uint32_t mscounteren;
+  uint32_t mcounteren;
+  uint32_t scounteren;
   reg_t sepc;
   reg_t sbadaddr;
   reg_t sscratch;
@@ -167,7 +168,6 @@ public:
   void reset();
   void step(size_t n); // run for n cycles
   void set_csr(int which, reg_t val);
-  void raise_interrupt(reg_t which);
   reg_t get_csr(int which);
   mmu_t* get_mmu() { return mmu; }
   state_t* get_state() { return &state; }
@@ -192,6 +192,14 @@ public:
   bool debug;
   // When true, take the slow simulation path.
   bool slow_path();
+  bool halted() { return state.dcsr.cause ? true : false; }
+  bool halt_request;
+  // The unique debug rom address that this hart jumps to when entering debug
+  // mode. Rely on the fact that spike hart IDs start at 0 and are consecutive.
+  uint32_t debug_rom_entry() {
+    fprintf(stderr, "Debug_rom_entry called for id %d = %x\n", id, DEBUG_ROM_ENTRY + 4*id);
+    return DEBUG_ROM_ENTRY + 4 * id;
+  }
 
   // Return the index of a trigger that matched, or -1.
   inline int trigger_match(trigger_operation_t operation, reg_t address, reg_t data)
@@ -297,8 +305,8 @@ private:
   static const size_t OPCODE_CACHE_SIZE = 8191;
   insn_desc_t opcode_cache[OPCODE_CACHE_SIZE];
 
-  void check_timer();
-  void take_interrupt(); // take a trap if any interrupts are pending
+  void take_pending_interrupt() { take_interrupt(state.mip & state.mie); }
+  void take_interrupt(reg_t mask); // take first enabled interrupt in mask
   void take_trap(trap_t& t, reg_t epc); // take an exception
   void disasm(insn_t insn); // disassemble and print an instruction
   int paddr_bits();
@@ -307,7 +315,7 @@ private:
 
   friend class sim_t;
   friend class mmu_t;
-  friend class rtc_t;
+  friend class clint_t;
   friend class extension_t;
 
   void parse_isa_string(const char* isa);
