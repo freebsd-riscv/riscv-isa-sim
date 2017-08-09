@@ -1,7 +1,6 @@
 #include "devices.h"
 #include "sim.h"
 #include "mmu.h"
-#include "gdbserver.h"
 #include <map>
 #include <iostream>
 #include <sstream>

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "remote_bitbang.h"
 
