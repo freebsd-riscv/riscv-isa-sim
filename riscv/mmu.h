@@ -26,7 +26,7 @@ struct insn_fetch_t
 
 struct icache_entry_t {
   reg_t tag;
-  reg_t pad;
+  struct icache_entry_t* next;
   insn_fetch_t data;
 };
 
@@ -53,7 +53,7 @@ class trigger_matched_t
 class mmu_t
 {
 public:
-  mmu_t(sim_t* sim, processor_t* proc);
+  mmu_t(simif_t* sim, processor_t* proc);
   ~mmu_t();
 
   inline reg_t misaligned_load(reg_t addr, size_t size)
@@ -209,6 +209,7 @@ public:
 
     insn_fetch_t fetch = {proc->decode_insn(insn), insn};
     entry->tag = addr;
+    entry->next = &icache[icache_index(addr + length)];
     entry->data = fetch;
 
     reg_t paddr = tlb_entry.target_offset + addr;;
@@ -239,7 +240,7 @@ public:
   void register_memtracer(memtracer_t*);
 
 private:
-  sim_t* sim;
+  simif_t* sim;
   processor_t* proc;
   memtracer_list_t tracer;
   uint16_t fetch_temp;

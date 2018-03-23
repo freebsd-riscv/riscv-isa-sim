@@ -26,11 +26,12 @@ static void handle_signal(int sig)
 sim_t::sim_t(const char* isa, size_t nprocs, bool halted, reg_t start_pc,
              std::vector<std::pair<reg_t, mem_t*>> mems,
              const std::vector<std::string>& args,
-             std::vector<int> const hartids, unsigned progsize)
-  : htif_t(args), debug_module(this, progsize), mems(mems),
-      procs(std::max(nprocs, size_t(1))),
-    start_pc(start_pc),
-    current_step(0), current_proc(0), debug(false), remote_bitbang(NULL)
+             std::vector<int> const hartids, unsigned progsize,
+             unsigned max_bus_master_bits, bool require_authentication)
+  : htif_t(args), mems(mems), procs(std::max(nprocs, size_t(1))),
+    start_pc(start_pc), current_step(0), current_proc(0), debug(false),
+    remote_bitbang(NULL),
+    debug_module(this, progsize, max_bus_master_bits, require_authentication)
 {
   signal(SIGINT, &handle_signal);
 
@@ -247,7 +248,7 @@ void sim_t::make_dtb()
     0x297,                                      // auipc  t0,0x0
     0x28593 + (reset_vec_size * 4 << 20),       // addi   a1, t0, &dtb
     0xf1402573,                                 // csrr   a0, mhartid
-    get_core(0)->xlen == 32 ?
+    get_core(0)->get_xlen() == 32 ?
       0x0182a283u :                             // lw     t0,24(t0)
       0x0182b283u,                              // ld     t0,24(t0)
     0x28067,                                    // jr     t0
@@ -277,8 +278,8 @@ void sim_t::make_dtb()
          "      reg = <" << i << ">;\n"
          "      status = \"okay\";\n"
          "      compatible = \"riscv\";\n"
-         "      riscv,isa = \"" << procs[i]->isa_string << "\";\n"
-         "      mmu-type = \"riscv," << (procs[i]->max_xlen <= 32 ? "sv32" : "sv48") << "\";\n"
+         "      riscv,isa = \"" << procs[i]->get_isa_string() << "\";\n"
+         "      mmu-type = \"riscv," << (procs[i]->get_max_xlen() <= 32 ? "sv32" : "sv48") << "\";\n"
          "      clock-frequency = <" << CPU_HZ << ">;\n"
          "      CPU" << i << "_intc: interrupt-controller {\n"
          "        #interrupt-cells = <1>;\n"
@@ -362,4 +363,9 @@ void sim_t::write_chunk(addr_t taddr, size_t len, const void* src)
   uint64_t data;
   memcpy(&data, src, sizeof data);
   debug_mmu->store_uint64(taddr, data);
+}
+
+void sim_t::proc_reset(unsigned id)
+{
+  debug_module.proc_reset(id);
 }

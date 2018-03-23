@@ -15,14 +15,27 @@
 class mmu_t;
 class remote_bitbang_t;
 
+// this is the interface to the simulator used by the processors and memory
+class simif_t
+{
+public:
+  // should return NULL for MMIO addresses
+  virtual char* addr_to_mem(reg_t addr) = 0;
+  // used for MMIO addresses
+  virtual bool mmio_load(reg_t addr, size_t len, uint8_t* bytes) = 0;
+  virtual bool mmio_store(reg_t addr, size_t len, const uint8_t* bytes) = 0;
+  // Callback for processors to let the simulation know they were reset.
+  virtual void proc_reset(unsigned id) = 0;
+};
+
 // this class encapsulates the processors and memory in a RISC-V machine.
-class sim_t : public htif_t
+class sim_t : public htif_t, public simif_t
 {
 public:
   sim_t(const char* isa, size_t _nprocs,  bool halted, reg_t start_pc,
         std::vector<std::pair<reg_t, mem_t*>> mems,
         const std::vector<std::string>& args, const std::vector<int> hartids,
-        unsigned progsize);
+        unsigned progsize, unsigned max_bus_master_bits, bool require_authentication);
   ~sim_t();
 
   // run the simulation to completion
@@ -38,7 +51,8 @@ public:
   processor_t* get_core(size_t i) { return procs.at(i); }
   unsigned nprocs() const { return procs.size(); }
 
-  debug_module_t debug_module;
+  // Callback for processors to let the simulation know they were reset.
+  void proc_reset(unsigned id);
 
 private:
   std::vector<std::pair<reg_t, mem_t*>> mems;
@@ -92,6 +106,7 @@ private:
 
   friend class processor_t;
   friend class mmu_t;
+  friend class debug_module_t;
 
   // htif
   friend void sim_thread_main(void*);
@@ -105,6 +120,12 @@ private:
   void write_chunk(addr_t taddr, size_t len, const void* src);
   size_t chunk_align() { return 8; }
   size_t chunk_max_size() { return 8; }
+
+public:
+  // Initialize this after procs, because in debug_module_t::reset() we
+  // enumerate processors, which segfaults if procs hasn't been initialized
+  // yet.
+  debug_module_t debug_module;
 };
 
 extern volatile bool ctrlc_pressed;
