@@ -4,6 +4,7 @@
 #include "debug_defines.h"
 #include "opcodes.h"
 #include "mmu.h"
+#include "sim.h"
 
 #include "debug_rom/debug_rom.h"
 #include "debug_rom_defines.h"
@@ -24,6 +25,7 @@ debug_module_t::debug_module_t(sim_t *sim, unsigned progbufsize, unsigned max_bu
   require_authentication(require_authentication),
   debug_progbuf_start(debug_data_start - program_buffer_bytes),
   debug_abstract_start(debug_progbuf_start - debug_abstract_size*4),
+  custom_base(0),
   sim(sim)
 {
   D(fprintf(stderr, "debug_data_start=0x%x\n", debug_data_start));
@@ -278,7 +280,7 @@ void debug_module_t::sb_read()
     } else if (sbcs.sbaccess == 2 && max_bus_master_bits >= 32) {
       sbdata[0] = sim->debug_mmu->load_uint32(address);
     } else if (sbcs.sbaccess == 3 && max_bus_master_bits >= 64) {
-      uint64_t value = sim->debug_mmu->load_uint32(address);
+      uint64_t value = sim->debug_mmu->load_uint64(address);
       sbdata[0] = value;
       sbdata[1] = value >> 32;
     } else {
@@ -347,8 +349,9 @@ bool debug_module_t::dmi_read(unsigned address, uint32_t *value)
 
           result = set_field(result, DMI_DMCONTROL_HALTREQ, dmcontrol.haltreq);
           result = set_field(result, DMI_DMCONTROL_RESUMEREQ, dmcontrol.resumereq);
-          result = set_field(result, ((1L<<hartsellen)-1) <<
-              DMI_DMCONTROL_HARTSEL_OFFSET, dmcontrol.hartsel);
+          result = set_field(result, DMI_DMCONTROL_HARTSELHI,
+              dmcontrol.hartsel >> DMI_DMCONTROL_HARTSELLO_LENGTH);
+          result = set_field(result, DMI_DMCONTROL_HARTSELLO, dmcontrol.hartsel);
           result = set_field(result, DMI_DMCONTROL_HARTRESET, dmcontrol.hartreset);
 	  result = set_field(result, DMI_DMCONTROL_NDMRESET, dmcontrol.ndmreset);
           result = set_field(result, DMI_DMCONTROL_DMACTIVE, dmcontrol.dmactive);
@@ -597,6 +600,20 @@ bool debug_module_t::perform_abstract_command()
           }
         }
 
+      } else if (regno >= 0xc000 && (regno & 1) == 1) {
+        // Support odd-numbered custom registers, to allow for debugger testing.
+        unsigned custom_number = regno - 0xc000;
+        abstractcs.cmderr = CMDERR_NONE;
+        if (write) {
+          // Writing V to custom register N will cause future reads of N to
+          // return V, reads of N-1 will return V-1, etc.
+          custom_base = read32(dmdata, 0) - custom_number;
+        } else {
+          write32(dmdata, 0, custom_number + custom_base);
+          write32(dmdata, 1, 0);
+        }
+        return true;
+
       } else {
         abstractcs.cmderr = CMDERR_NOTSUP;
         return true;
@@ -667,8 +684,10 @@ bool debug_module_t::dmi_write(unsigned address, uint32_t value)
             dmcontrol.resumereq = get_field(value, DMI_DMCONTROL_RESUMEREQ);
             dmcontrol.hartreset = get_field(value, DMI_DMCONTROL_HARTRESET);
             dmcontrol.ndmreset = get_field(value, DMI_DMCONTROL_NDMRESET);
-            dmcontrol.hartsel = get_field(value, ((1L<<hartsellen)-1) <<
-                DMI_DMCONTROL_HARTSEL_OFFSET);
+            dmcontrol.hartsel = get_field(value, DMI_DMCONTROL_HARTSELHI) <<
+              DMI_DMCONTROL_HARTSELLO_LENGTH;
+            dmcontrol.hartsel |= get_field(value, DMI_DMCONTROL_HARTSELLO);
+            dmcontrol.hartsel &= (1L<<hartsellen) - 1;
             if (get_field(value, DMI_DMCONTROL_ACKHAVERESET)) {
               havereset[dmcontrol.hartsel] = false;
             }

@@ -123,6 +123,10 @@ struct state_t
   mcontrol_t mcontrol[num_triggers];
   reg_t tdata2[num_triggers];
 
+  static const int n_pmp = 16;
+  uint8_t pmpcfg[n_pmp];
+  reg_t pmpaddr[n_pmp];
+
   uint32_t fflags;
   uint32_t frm;
   bool serialized; // whether timer CSRs are in a well-defined state
@@ -134,8 +138,6 @@ struct state_t
       STEP_STEPPING,
       STEP_STEPPED
   } single_step;
-
-  reg_t load_reservation;
 
 #ifdef RISCV_ENABLE_COMMITLOG
   commit_log_reg_t log_reg_write;
@@ -197,7 +199,6 @@ public:
   }
   reg_t legalize_privilege(reg_t);
   void set_privilege(reg_t);
-  void yield_load_reservation() { state.load_reservation = (reg_t)-1; }
   void update_histogram(reg_t pc);
   const disassembler_t* get_disassembler() { return disassembler; }
 

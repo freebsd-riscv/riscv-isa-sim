@@ -7,7 +7,7 @@
 #include "trap.h"
 #include "common.h"
 #include "config.h"
-#include "sim.h"
+#include "simif.h"
 #include "processor.h"
 #include "memtracer.h"
 #include <stdlib.h>
@@ -180,6 +180,29 @@ public:
   amo_func(uint32)
   amo_func(uint64)
 
+  inline void yield_load_reservation()
+  {
+    load_reservation_address = (reg_t)-1;
+  }
+
+  inline void acquire_load_reservation(reg_t vaddr)
+  {
+    reg_t paddr = translate(vaddr, 1, LOAD);
+    if (auto host_addr = sim->addr_to_mem(paddr))
+      load_reservation_address = refill_tlb(vaddr, paddr, host_addr, LOAD).target_offset + vaddr;
+    else
+      throw trap_load_access_fault(vaddr); // disallow LR to I/O space
+  }
+
+  inline bool check_load_reservation(reg_t vaddr)
+  {
+    reg_t paddr = translate(vaddr, 1, STORE);
+    if (auto host_addr = sim->addr_to_mem(paddr))
+      return load_reservation_address == refill_tlb(vaddr, paddr, host_addr, STORE).target_offset + vaddr;
+    else
+      throw trap_store_access_fault(vaddr); // disallow SC to I/O space
+  }
+
   static const reg_t ICACHE_ENTRIES = 1024;
 
   inline size_t icache_index(reg_t addr)
@@ -261,6 +284,7 @@ private:
   simif_t* sim;
   processor_t* proc;
   memtracer_list_t tracer;
+  reg_t load_reservation_address;
   uint16_t fetch_temp;
 
   // implement an instruction cache for simulator performance
@@ -287,21 +311,27 @@ private:
   tlb_entry_t fetch_slow_path(reg_t addr);
   void load_slow_path(reg_t addr, reg_t len, uint8_t* bytes);
   void store_slow_path(reg_t addr, reg_t len, const uint8_t* bytes);
-  reg_t translate(reg_t addr, access_type type);
+  reg_t translate(reg_t addr, reg_t len, access_type type);
 
   // ITLB lookup
   inline tlb_entry_t translate_insn_addr(reg_t addr) {
     reg_t vpn = addr >> PGSHIFT;
     if (likely(tlb_insn_tag[vpn % TLB_ENTRIES] == vpn))
       return tlb_data[vpn % TLB_ENTRIES];
+    tlb_entry_t result;
+    if (unlikely(tlb_insn_tag[vpn % TLB_ENTRIES] != (vpn | TLB_CHECK_TRIGGERS))) {
+      result = fetch_slow_path(addr);
+    } else {
+      result = tlb_data[vpn % TLB_ENTRIES];
+    }
     if (unlikely(tlb_insn_tag[vpn % TLB_ENTRIES] == (vpn | TLB_CHECK_TRIGGERS))) {
       uint16_t* ptr = (uint16_t*)(tlb_data[vpn % TLB_ENTRIES].host_offset + addr);
       int match = proc->trigger_match(OPERATION_EXECUTE, addr, *ptr);
-      if (match >= 0)
+      if (match >= 0) {
         throw trigger_matched_t(match, OPERATION_EXECUTE, addr, *ptr);
-      return tlb_data[vpn % TLB_ENTRIES];
+      }
     }
-    return fetch_slow_path(addr);
+    return result;
   }
 
   inline const uint16_t* translate_insn_addr_to_host(reg_t addr) {
@@ -322,6 +352,9 @@ private:
     }
     return new trigger_matched_t(match, operation, address, data);
   }
+
+  reg_t pmp_homogeneous(reg_t addr, reg_t len);
+  reg_t pmp_ok(reg_t addr, access_type type, reg_t mode);
 
   bool check_triggers_fetch;
   bool check_triggers_load;
